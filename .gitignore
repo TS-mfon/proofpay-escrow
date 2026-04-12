@@ -6,4 +6,7 @@ frontend/node_modules/
 relay/*.db
 *.db
 relay/__pycache__/
+__pycache__/
+*.pyc
+*.tsbuildinfo
 .env
