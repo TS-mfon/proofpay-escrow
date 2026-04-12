@@ -1,0 +1,20 @@
+services:
+  - type: web
+    name: proofpay-escrow-relay
+    runtime: python
+    plan: free
+    buildCommand: pip install -r relay/requirements.txt
+    startCommand: python3 relay/proofpay_service.py
+    envVars:
+      - key: ARC_RPC_URL
+        value: https://rpc.testnet.arc.network
+      - key: ARC_CHAIN_ID
+        value: "5042002"
+      - key: ARC_ESCROW_CONTRACT
+        value: 0xE9e9d7A274528D2B055aDe9c5f4b7f9DF639e2f7
+      - key: GENLAYER_NETWORK
+        value: studionet
+      - key: GENLAYER_JUDGE_CONTRACT
+        value: 0xd1066738fB575067e65a3975aF6Ef9945fE1CB33
+      - key: PROOFPAY_DB_PATH
+        value: /tmp/proofpay.db

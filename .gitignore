@@ -1,0 +1,9 @@
+arc/cache/
+arc/out/
+arc/broadcast/
+frontend/dist/
+frontend/node_modules/
+relay/*.db
+*.db
+relay/__pycache__/
+.env
