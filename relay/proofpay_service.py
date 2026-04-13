@@ -15,6 +15,7 @@ ARC_RPC_URL = os.environ.get("ARC_RPC_URL", "https://rpc.testnet.arc.network")
 ARC_CHAIN_ID = int(os.environ.get("ARC_CHAIN_ID", "5042002"))
 GENLAYER_NETWORK = os.environ.get("GENLAYER_NETWORK", "studionet")
 BLOCKED_EVIDENCE_HOSTS = ("x.com", "twitter.com", "instagram.com", "tiktok.com", "facebook.com")
+RELAY_VERSION = "proofpay-ui-v2"
 
 
 def digest(value):
@@ -124,6 +125,7 @@ class Handler(BaseHTTPRequestHandler):
                     "arcEscrowContract": ARC_ESCROW_CONTRACT,
                     "genlayerNetwork": GENLAYER_NETWORK,
                     "genlayerJudgeContract": GENLAYER_JUDGE_CONTRACT,
+                    "relayVersion": RELAY_VERSION,
                 },
             )
             return
