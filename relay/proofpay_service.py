@@ -21,7 +21,7 @@ ARC_RPC_URL = os.environ.get("ARC_RPC_URL", "https://rpc.testnet.arc.network")
 ARC_CHAIN_ID = int(os.environ.get("ARC_CHAIN_ID", "5042002"))
 GENLAYER_NETWORK = os.environ.get("GENLAYER_NETWORK", "studionet")
 BLOCKED_EVIDENCE_HOSTS = ("x.com", "twitter.com", "instagram.com", "tiktok.com", "facebook.com")
-RELAY_VERSION = "proofpay-ui-v5"
+RELAY_VERSION = "proofpay-ui-v6"
 GENLAYER_CLI = os.environ.get("GENLAYER_CLI", "genlayer")
 GENLAYER_PASSWORD = os.environ.get("GENLAYER_PASSWORD", "")
 RELAY_PRIVATE_KEY = os.environ.get("RELAY_PRIVATE_KEY", os.environ.get("PRIVATE_KEY", ""))
@@ -147,6 +147,16 @@ def extract_json_object(raw):
     raise RuntimeError(f"Could not parse GenLayer verdict output: {raw}")
 
 
+def maybe_extract_verdict(raw):
+    try:
+        data = extract_json_object(raw)
+    except Exception:
+        return None
+    if isinstance(data, dict) and {"accepted", "verdictDigest"}.issubset(data.keys()):
+        return data
+    return None
+
+
 def evaluate_with_genlayer(job_id, submission_id, requirements, deliverable, deliverable_url, evidence_urls):
     write_output = run_genlayer(
         [
@@ -164,12 +174,22 @@ def evaluate_with_genlayer(job_id, submission_id, requirements, deliverable, del
         ],
         timeout=300,
     )
+    write_verdict = maybe_extract_verdict(write_output)
+    if write_verdict:
+        return write_verdict
     tx_hash_match = re.search(r"0x[a-fA-F0-9]{64}", write_output)
     if tx_hash_match:
         try:
-            run_genlayer(["receipt", tx_hash_match.group(0), "--status", "FINALIZED", "--retries", "60", "--interval", "3000"], timeout=240)
-        except Exception:
-            pass
+            receipt_output = run_genlayer(["receipt", tx_hash_match.group(0), "--status", "FINALIZED", "--retries", "60", "--interval", "3000"], timeout=240)
+            receipt_verdict = maybe_extract_verdict(receipt_output)
+            if receipt_verdict:
+                return receipt_verdict
+        except Exception as exc:
+            last_receipt_error = exc
+        else:
+            last_receipt_error = None
+    else:
+        last_receipt_error = "GenLayer write output did not include a transaction hash."
     last_error = None
     for _ in range(18):
         try:
@@ -178,7 +198,7 @@ def evaluate_with_genlayer(job_id, submission_id, requirements, deliverable, del
         except Exception as exc:
             last_error = exc
             time.sleep(10)
-    raise RuntimeError(f"GenLayer verdict was not available after evaluation: {last_error}")
+    raise RuntimeError(f"GenLayer verdict was not available after evaluation. receipt={last_receipt_error}; read={last_error}; writeOutput={write_output[:1200]}")
 
 
 def bytes32_from_digest(value):
