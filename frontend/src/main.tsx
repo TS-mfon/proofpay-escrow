@@ -13,6 +13,9 @@ declare global {
 
 const API_URL = import.meta.env.VITE_API_URL || "https://proofpay-escrow-relay.onrender.com";
 const ARC_CHAIN_ID = 5042002;
+const ARC_ESCROW_CONTRACT = "0xE9e9d7A274528D2B055aDe9c5f4b7f9DF639e2f7";
+const GENLAYER_JUDGE_CONTRACT = "0xd1066738fB575067e65a3975aF6Ef9945fE1CB33";
+const GENLAYER_NETWORK = "studionet";
 
 type Health = {
   ok: boolean;
@@ -58,11 +61,22 @@ function App() {
   async function refresh() {
     try {
       const [healthRes, jobsRes] = await Promise.all([fetch(`${API_URL}/health`), fetch(`${API_URL}/jobs`)]);
+      if (!healthRes.ok || !jobsRes.ok) {
+        throw new Error("Backend returned an unavailable response.");
+      }
       setHealth(await healthRes.json());
       const data = await jobsRes.json();
       setJobs(data.jobs || []);
+      setMessage("Backend connected. Network configuration loaded.");
     } catch (error) {
-      setMessage(`Backend unavailable: ${error instanceof Error ? error.message : "unknown error"}`);
+      setHealth({
+        ok: false,
+        arcEscrowContract: ARC_ESCROW_CONTRACT,
+        genlayerJudgeContract: GENLAYER_JUDGE_CONTRACT,
+        arcChainId: ARC_CHAIN_ID,
+        genlayerNetwork: GENLAYER_NETWORK,
+      });
+      setMessage(`Backend is starting or temporarily unavailable: ${error instanceof Error ? error.message : "unknown error"}`);
     }
   }
 
@@ -122,6 +136,7 @@ function App() {
   return (
     <main>
       <section className="hero">
+        <div className="icon-row"><span className="icon">PP</span><span className="icon">ARC</span><span className="icon">GL</span></div>
         <p className="eyebrow">Arc + GenLayer</p>
         <h1>ProofPay Escrow</h1>
         <p>Fund Arc USDC-native work escrows, then use a GenLayer Studionet judge to check deliverables before release.</p>
@@ -130,7 +145,7 @@ function App() {
 
       <section className="grid">
         <div className="card">
-          <h2>Create Job</h2>
+          <h2><span className="mini-icon">01</span>Create Job</h2>
           <label>Provider Wallet<span>The freelancer, vendor, or AI agent address that can receive payout.</span><input value={jobForm.provider} onChange={(e) => setJobForm({ ...jobForm, provider: e.target.value })} /></label>
           <label>Job Title<span>Short public name for the escrow job.</span><input value={jobForm.title} onChange={(e) => setJobForm({ ...jobForm, title: e.target.value })} /></label>
           <label>Requirements<span>The acceptance criteria GenLayer should check against the submission.</span><textarea value={jobForm.requirements} onChange={(e) => setJobForm({ ...jobForm, requirements: e.target.value })} /></label>
@@ -140,7 +155,7 @@ function App() {
         </div>
 
         <div className="card">
-          <h2>Submit Work</h2>
+          <h2><span className="mini-icon">02</span>Submit Work</h2>
           <label>Job ID<span>Use the ID returned after job creation.</span><input value={submissionForm.jobId} onChange={(e) => setSubmissionForm({ ...submissionForm, jobId: e.target.value })} /></label>
           <label>Deliverable Text<span>The work result to evaluate.</span><textarea value={submissionForm.deliverable} onChange={(e) => setSubmissionForm({ ...submissionForm, deliverable: e.target.value })} /></label>
           <label>Deliverable URL<span>Optional URL if the deliverable lives off-app.</span><input value={submissionForm.deliverableUrl} onChange={(e) => setSubmissionForm({ ...submissionForm, deliverableUrl: e.target.value })} /></label>
@@ -150,15 +165,16 @@ function App() {
       </section>
 
       <section className="card">
-        <h2>Network</h2>
-        <p>Arc escrow: {health?.arcEscrowContract || "not configured yet"}</p>
-        <p>GenLayer judge: {health?.genlayerJudgeContract || "not configured yet"} on {health?.genlayerNetwork || "studionet"}</p>
+        <h2><span className="mini-icon">03</span>Network</h2>
+        <p>Arc escrow: {health?.arcEscrowContract || ARC_ESCROW_CONTRACT}</p>
+        <p>GenLayer judge: {health?.genlayerJudgeContract || GENLAYER_JUDGE_CONTRACT} on {health?.genlayerNetwork || GENLAYER_NETWORK}</p>
+        <p>Relay API: {API_URL}</p>
         <p>{message}</p>
       </section>
 
       <section className="card">
-        <h2>Jobs</h2>
-        {jobs.map((job) => <p key={job.id}>{job.id} - {job.title} - {job.status} - {job.amount} Arc USDC</p>)}
+        <h2><span className="mini-icon">04</span>Jobs</h2>
+        {jobs.length === 0 ? <p>No jobs created yet.</p> : jobs.map((job) => <p key={job.id}>{job.id} - {job.title} - {job.status} - {job.amount} Arc USDC</p>)}
       </section>
     </main>
   );
