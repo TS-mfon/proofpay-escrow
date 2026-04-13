@@ -3,8 +3,8 @@ services:
     name: proofpay-escrow-relay
     runtime: python
     plan: free
-    buildCommand: pip install -r relay/requirements.txt
-    startCommand: python3 relay/proofpay_service.py
+    buildCommand: pip install -r relay/requirements.txt && npm install -g genlayer
+    startCommand: genlayer network set studionet && genlayer account import --name relay --private-key "$RELAY_PRIVATE_KEY" --password "$GENLAYER_PASSWORD" || true && genlayer account use relay && python3 relay/proofpay_service.py
     envVars:
       - key: ARC_RPC_URL
         value: https://rpc.testnet.arc.network

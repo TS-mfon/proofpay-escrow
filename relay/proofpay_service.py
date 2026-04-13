@@ -1,11 +1,16 @@
 import hashlib
 import json
 import os
+import re
+import shutil
 import sqlite3
+import subprocess
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse
 from urllib.request import Request, urlopen
+
+from web3 import Web3
 
 DB_PATH = os.environ.get("PROOFPAY_DB_PATH", "proofpay.db")
 PORT = int(os.environ.get("PORT", "8895"))
@@ -15,7 +20,39 @@ ARC_RPC_URL = os.environ.get("ARC_RPC_URL", "https://rpc.testnet.arc.network")
 ARC_CHAIN_ID = int(os.environ.get("ARC_CHAIN_ID", "5042002"))
 GENLAYER_NETWORK = os.environ.get("GENLAYER_NETWORK", "studionet")
 BLOCKED_EVIDENCE_HOSTS = ("x.com", "twitter.com", "instagram.com", "tiktok.com", "facebook.com")
-RELAY_VERSION = "proofpay-ui-v2"
+RELAY_VERSION = "proofpay-ui-v3"
+GENLAYER_CLI = os.environ.get("GENLAYER_CLI", "genlayer")
+GENLAYER_PASSWORD = os.environ.get("GENLAYER_PASSWORD", "")
+RELAY_PRIVATE_KEY = os.environ.get("RELAY_PRIVATE_KEY", os.environ.get("PRIVATE_KEY", ""))
+RUBRIC_VERSION = os.environ.get("RUBRIC_VERSION", "v1")
+
+ESCROW_ABI = [
+    {
+        "inputs": [
+            {"internalType": "uint256", "name": "jobId", "type": "uint256"},
+            {"internalType": "bool", "name": "accepted", "type": "bool"},
+            {"internalType": "bytes32", "name": "verdictDigest", "type": "bytes32"},
+        ],
+        "name": "recordVerdict",
+        "outputs": [],
+        "stateMutability": "nonpayable",
+        "type": "function",
+    },
+    {
+        "inputs": [{"internalType": "uint256", "name": "jobId", "type": "uint256"}],
+        "name": "releasePayout",
+        "outputs": [],
+        "stateMutability": "nonpayable",
+        "type": "function",
+    },
+    {
+        "inputs": [{"internalType": "uint256", "name": "jobId", "type": "uint256"}],
+        "name": "refundBuyer",
+        "outputs": [],
+        "stateMutability": "nonpayable",
+        "type": "function",
+    },
+]
 
 
 def digest(value):
@@ -87,6 +124,79 @@ def validate_optional_urls(urls):
         except Exception as exc:
             problems.append({"url": url, "reason": f"GenLayer cannot access this link from the relay: {exc}"})
     return problems
+
+
+def run_genlayer(args, timeout=180):
+    if not shutil.which(GENLAYER_CLI):
+        raise RuntimeError("GenLayer CLI is not installed on the relay.")
+    stdin = f"{GENLAYER_PASSWORD}\n" if GENLAYER_PASSWORD else None
+    result = subprocess.run([GENLAYER_CLI, *args], input=stdin, text=True, capture_output=True, timeout=timeout)
+    if result.returncode != 0:
+        raise RuntimeError((result.stderr or result.stdout or "GenLayer command failed").strip())
+    return result.stdout.strip()
+
+
+def extract_json_object(raw):
+    matches = re.findall(r"\{.*\}", raw, flags=re.S)
+    for candidate in reversed(matches):
+        try:
+            return json.loads(candidate)
+        except Exception:
+            continue
+    raise RuntimeError(f"Could not parse GenLayer verdict output: {raw}")
+
+
+def evaluate_with_genlayer(job_id, submission_id, requirements, deliverable, deliverable_url, evidence_urls):
+    run_genlayer(
+        [
+            "write",
+            GENLAYER_JUDGE_CONTRACT,
+            "evaluate_delivery",
+            "--args",
+            job_id,
+            submission_id,
+            requirements,
+            deliverable,
+            deliverable_url or "",
+            json.dumps(evidence_urls),
+            RUBRIC_VERSION,
+        ],
+        timeout=300,
+    )
+    verdict_raw = run_genlayer(["call", GENLAYER_JUDGE_CONTRACT, "get_verdict", "--args", job_id], timeout=120)
+    return extract_json_object(verdict_raw)
+
+
+def bytes32_from_digest(value):
+    clean = str(value or "").removeprefix("0x")
+    if len(clean) == 64 and re.fullmatch(r"[0-9a-fA-F]{64}", clean):
+        return "0x" + clean
+    return Web3.keccak(text=str(value)).hex()
+
+
+def send_arc_tx(function_name, *args):
+    if not RELAY_PRIVATE_KEY:
+        raise RuntimeError("Relay private key is not configured; cannot write Arc verdict or payout/refund.")
+    web3 = Web3(Web3.HTTPProvider(ARC_RPC_URL))
+    if not web3.is_connected():
+        raise RuntimeError("Arc RPC is unavailable.")
+    account = web3.eth.account.from_key(RELAY_PRIVATE_KEY)
+    contract = web3.eth.contract(address=Web3.to_checksum_address(ARC_ESCROW_CONTRACT), abi=ESCROW_ABI)
+    tx = getattr(contract.functions, function_name)(*args).build_transaction(
+        {
+            "from": account.address,
+            "nonce": web3.eth.get_transaction_count(account.address),
+            "chainId": ARC_CHAIN_ID,
+            "gasPrice": web3.eth.gas_price,
+        }
+    )
+    tx.setdefault("gas", web3.eth.estimate_gas(tx))
+    signed = account.sign_transaction(tx)
+    tx_hash = web3.eth.send_raw_transaction(signed.raw_transaction)
+    receipt = web3.eth.wait_for_transaction_receipt(tx_hash, timeout=180)
+    if receipt.status != 1:
+        raise RuntimeError(f"Arc transaction {function_name} failed: {tx_hash.hex()}")
+    return tx_hash.hex()
 
 
 def json_response(handler, status, payload):
@@ -195,12 +305,22 @@ class Handler(BaseHTTPRequestHandler):
             if url_problems:
                 json_response(self, 400, {"error": "One or more evidence links cannot be accessed by GenLayer.", "urlProblems": url_problems})
                 return
-            verdict = {
-                "accepted": True,
-                "summary": "Relay preview accepted the submission shape. Final judgement should be written through GenLayer Studionet before payout/refund.",
-                "reasonCodes": ["PASS_MINIMUM_ACCEPTANCE"] if evidence_urls else ["NO_OPTIONAL_EVIDENCE_PROVIDED"],
-                "verdictDigest": digest(payload),
-            }
+            with sqlite3.connect(DB_PATH) as db:
+                job = db.execute("SELECT * FROM jobs WHERE id = ?", (payload["jobId"],)).fetchone()
+            if not job:
+                json_response(self, 404, {"error": "Job not found."})
+                return
+            onchain_job_id = payload.get("onchainJobId") or (job[9] if len(job) > 9 else "")
+            if not onchain_job_id:
+                json_response(self, 400, {"error": "Missing on-chain job ID; create and fund the job before submitting work."})
+                return
+            try:
+                verdict = evaluate_with_genlayer(payload["jobId"], submission_id, job[4], payload["deliverable"], payload.get("deliverableUrl", ""), evidence_urls)
+                record_tx_hash = send_arc_tx("recordVerdict", int(onchain_job_id), bool(verdict["accepted"]), bytes32_from_digest(verdict["verdictDigest"]))
+                settlement_tx_hash = send_arc_tx("releasePayout" if verdict["accepted"] else "refundBuyer", int(onchain_job_id))
+            except Exception as exc:
+                json_response(self, 502, {"error": f"GenLayer/Arc settlement failed: {exc}"})
+                return
             with sqlite3.connect(DB_PATH) as db:
                 db.execute(
                     "INSERT INTO submissions VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
@@ -215,7 +335,8 @@ class Handler(BaseHTTPRequestHandler):
                         now,
                     ),
                 )
-            json_response(self, 201, {"submissionId": submission_id, "verdict": verdict})
+                db.execute("UPDATE jobs SET status = ? WHERE id = ?", ("paid" if verdict["accepted"] else "refunded", payload["jobId"]))
+            json_response(self, 201, {"submissionId": submission_id, "verdict": verdict, "recordTxHash": record_tx_hash, "settlementTxHash": settlement_tx_hash})
             return
         json_response(self, 404, {"error": "not_found"})
 

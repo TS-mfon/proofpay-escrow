@@ -252,7 +252,7 @@ function App() {
   );
 }
 
-function Landing({ setPage, connectWallet, wallets }: { setPage: (page: Page) => void; connectWallet: (role: Role) => void; wallets: Record<Role, string> }) {
+function Landing({ setPage }: { setPage: (page: Page) => void; connectWallet: (role: Role) => void; wallets: Record<Role, string> }) {
   return <section className="hero page-rise">
     <div className="hero-copy">
       <p className="eyebrow">Verified work escrow for Arc builders</p>
@@ -261,10 +261,6 @@ function Landing({ setPage, connectWallet, wallets }: { setPage: (page: Page) =>
       <div className="actions">
         <button className="primary" onClick={() => setPage("creator")}>Create a funded job</button>
         <button className="secondary" onClick={() => setPage("jobs")}>Find open jobs</button>
-      </div>
-      <div className="auth-split">
-        <button onClick={() => connectWallet("creator")}>Creator auth {wallets.creator && short(wallets.creator)}</button>
-        <button onClick={() => connectWallet("jobber")}>Jobber auth {wallets.jobber && short(wallets.jobber)}</button>
       </div>
     </div>
     <div className="hero-panel">
