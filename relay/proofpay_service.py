@@ -21,7 +21,7 @@ ARC_RPC_URL = os.environ.get("ARC_RPC_URL", "https://rpc.testnet.arc.network")
 ARC_CHAIN_ID = int(os.environ.get("ARC_CHAIN_ID", "5042002"))
 GENLAYER_NETWORK = os.environ.get("GENLAYER_NETWORK", "studionet")
 BLOCKED_EVIDENCE_HOSTS = ("x.com", "twitter.com", "instagram.com", "tiktok.com", "facebook.com")
-RELAY_VERSION = "proofpay-ui-v4"
+RELAY_VERSION = "proofpay-ui-v5"
 GENLAYER_CLI = os.environ.get("GENLAYER_CLI", "genlayer")
 GENLAYER_PASSWORD = os.environ.get("GENLAYER_PASSWORD", "")
 RELAY_PRIVATE_KEY = os.environ.get("RELAY_PRIVATE_KEY", os.environ.get("PRIVATE_KEY", ""))
@@ -291,6 +291,24 @@ class Handler(BaseHTTPRequestHandler):
                 for row in rows
             ]
             json_response(self, 200, {"jobs": jobs})
+            return
+        if path == "/submissions":
+            with sqlite3.connect(DB_PATH) as db:
+                rows = db.execute("SELECT * FROM submissions ORDER BY created_at DESC").fetchall()
+            submissions = [
+                {
+                    "id": row[0],
+                    "jobId": row[1],
+                    "deliverable": row[2],
+                    "deliverableUrl": row[3],
+                    "evidenceUrls": json.loads(row[4]),
+                    "accepted": row[5],
+                    "verdict": json.loads(row[6]) if row[6] else None,
+                    "createdAt": row[7],
+                }
+                for row in rows
+            ]
+            json_response(self, 200, {"submissions": submissions})
             return
         json_response(self, 404, {"error": "not_found"})
 
