@@ -17,3 +17,8 @@
 - Transaction hash: `0x5cfbca390eb30395213c66c75a2035bc6431dc402b372ca70004ab95ae220609`
 - Rubric version: `v1`
 - Verification: `genlayer call 0xd1066738fB575067e65a3975aF6Ef9945fE1CB33 get_rubric_version` returned `v1`
+
+## Hosted Apps
+
+- Relay backend: `https://proofpay-escrow-relay.onrender.com`
+- Frontend: `https://proofpay-escrow.vercel.app`

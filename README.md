@@ -16,6 +16,10 @@ Arc RPC: `https://rpc.testnet.arc.network`
 
 GenLayer RPC: `https://studio.genlayer.com/api`
 
+Relay backend: `https://proofpay-escrow-relay.onrender.com`
+
+Frontend: `https://proofpay-escrow.vercel.app`
+
 ## How It Works
 
 1. Buyer enters provider wallet, title, requirements, amount, and deadline.
@@ -54,5 +58,5 @@ genvm-lint check ../genlayer/contracts/proofpay_judge.py
 Deploy from `frontend/` and set:
 
 ```bash
-VITE_API_URL=<your-render-proofpay-relay-url>
+VITE_API_URL=https://proofpay-escrow-relay.onrender.com
 ```
