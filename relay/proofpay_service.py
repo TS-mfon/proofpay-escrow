@@ -21,7 +21,7 @@ ARC_RPC_URL = os.environ.get("ARC_RPC_URL", "https://rpc.testnet.arc.network")
 ARC_CHAIN_ID = int(os.environ.get("ARC_CHAIN_ID", "5042002"))
 GENLAYER_NETWORK = os.environ.get("GENLAYER_NETWORK", "studionet")
 BLOCKED_EVIDENCE_HOSTS = ("x.com", "twitter.com", "instagram.com", "tiktok.com", "facebook.com")
-RELAY_VERSION = "proofpay-ui-v8"
+RELAY_VERSION = "proofpay-ui-v9"
 GENLAYER_CLI = os.environ.get("GENLAYER_CLI", "genlayer")
 GENLAYER_PASSWORD = os.environ.get("GENLAYER_PASSWORD", "")
 RELAY_PRIVATE_KEY = os.environ.get("RELAY_PRIVATE_KEY", os.environ.get("PRIVATE_KEY", ""))
@@ -225,14 +225,13 @@ def evaluate_with_genlayer(job_id, submission_id, requirements, deliverable, del
         ],
         timeout=300,
     )
-    genlayer_tx_hash = ""
+    tx_hash_match = re.search(r"0x[a-fA-F0-9]{64}", write_output)
+    genlayer_tx_hash = tx_hash_match.group(0) if tx_hash_match else ""
     write_verdict = maybe_extract_verdict(write_output)
     if write_verdict:
         write_verdict["genlayerTxHash"] = genlayer_tx_hash
         return write_verdict
-    tx_hash_match = re.search(r"0x[a-fA-F0-9]{64}", write_output)
     if tx_hash_match:
-        genlayer_tx_hash = tx_hash_match.group(0)
         try:
             receipt_output = run_genlayer(["receipt", genlayer_tx_hash, "--status", "FINALIZED", "--retries", "60", "--interval", "3000"], timeout=240)
             receipt_verdict = maybe_extract_verdict(receipt_output)
@@ -287,7 +286,7 @@ def send_arc_tx(function_name, *args):
     receipt = web3.eth.wait_for_transaction_receipt(tx_hash, timeout=180)
     if receipt.status != 1:
         raise RuntimeError(f"Arc transaction {function_name} failed: {tx_hash.hex()}")
-    return tx_hash.hex()
+    return Web3.to_hex(tx_hash)
 
 
 def settle_submission_async(submission_id, job_id, onchain_job_id, requirements, deliverable, deliverable_url, evidence_urls):
