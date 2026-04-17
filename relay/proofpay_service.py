@@ -21,7 +21,7 @@ ARC_RPC_URL = os.environ.get("ARC_RPC_URL", "https://rpc.testnet.arc.network")
 ARC_CHAIN_ID = int(os.environ.get("ARC_CHAIN_ID", "5042002"))
 GENLAYER_NETWORK = os.environ.get("GENLAYER_NETWORK", "studionet")
 BLOCKED_EVIDENCE_HOSTS = ("x.com", "twitter.com", "instagram.com", "tiktok.com", "facebook.com")
-RELAY_VERSION = "proofpay-ui-v6"
+RELAY_VERSION = "proofpay-ui-v7"
 GENLAYER_CLI = os.environ.get("GENLAYER_CLI", "genlayer")
 GENLAYER_PASSWORD = os.environ.get("GENLAYER_PASSWORD", "")
 RELAY_PRIVATE_KEY = os.environ.get("RELAY_PRIVATE_KEY", os.environ.get("PRIVATE_KEY", ""))
@@ -91,10 +91,12 @@ def init_db():
                 evidence_urls TEXT NOT NULL,
                 accepted INTEGER,
                 verdict TEXT,
-                created_at INTEGER NOT NULL
+                created_at INTEGER NOT NULL,
+                submission_tx_hash TEXT DEFAULT ''
             )
             """
         )
+        add_column(db, "submissions", "submission_tx_hash", "TEXT DEFAULT ''")
 
 
 def add_column(db, table, column, definition):
@@ -137,9 +139,25 @@ def run_genlayer(args, timeout=180):
     return result.stdout.strip()
 
 
+def extract_json_candidates(raw):
+    candidates = []
+    stack = []
+    start = None
+    for index, char in enumerate(raw):
+        if char == "{":
+            if not stack:
+                start = index
+            stack.append(char)
+        elif char == "}" and stack:
+            stack.pop()
+            if not stack and start is not None:
+                candidates.append(raw[start : index + 1])
+                start = None
+    return candidates
+
+
 def extract_json_object(raw):
-    matches = re.findall(r"\{.*\}", raw, flags=re.S)
-    for candidate in reversed(matches):
+    for candidate in reversed(extract_json_candidates(raw)):
         try:
             return json.loads(candidate)
         except Exception:
@@ -174,15 +192,19 @@ def evaluate_with_genlayer(job_id, submission_id, requirements, deliverable, del
         ],
         timeout=300,
     )
+    genlayer_tx_hash = ""
     write_verdict = maybe_extract_verdict(write_output)
     if write_verdict:
+        write_verdict["genlayerTxHash"] = genlayer_tx_hash
         return write_verdict
     tx_hash_match = re.search(r"0x[a-fA-F0-9]{64}", write_output)
     if tx_hash_match:
+        genlayer_tx_hash = tx_hash_match.group(0)
         try:
-            receipt_output = run_genlayer(["receipt", tx_hash_match.group(0), "--status", "FINALIZED", "--retries", "60", "--interval", "3000"], timeout=240)
+            receipt_output = run_genlayer(["receipt", genlayer_tx_hash, "--status", "FINALIZED", "--retries", "60", "--interval", "3000"], timeout=240)
             receipt_verdict = maybe_extract_verdict(receipt_output)
             if receipt_verdict:
+                receipt_verdict["genlayerTxHash"] = genlayer_tx_hash
                 return receipt_verdict
         except Exception as exc:
             last_receipt_error = exc
@@ -194,7 +216,9 @@ def evaluate_with_genlayer(job_id, submission_id, requirements, deliverable, del
     for _ in range(18):
         try:
             verdict_raw = run_genlayer(["call", GENLAYER_JUDGE_CONTRACT, "get_verdict", "--args", job_id], timeout=120)
-            return extract_json_object(verdict_raw)
+            verdict = extract_json_object(verdict_raw)
+            verdict["genlayerTxHash"] = genlayer_tx_hash
+            return verdict
         except Exception as exc:
             last_error = exc
             time.sleep(10)
@@ -240,6 +264,7 @@ def settle_submission_async(submission_id, job_id, onchain_job_id, requirements,
         settlement_tx_hash = send_arc_tx("releasePayout" if verdict["accepted"] else "refundBuyer", int(onchain_job_id))
         verdict["recordTxHash"] = record_tx_hash
         verdict["settlementTxHash"] = settlement_tx_hash
+        verdict["settlementStatus"] = "payout_released" if verdict["accepted"] else "buyer_refunded"
         status = "paid" if verdict["accepted"] else "refunded"
         accepted = 1 if verdict["accepted"] else 0
     except Exception as exc:
@@ -325,6 +350,7 @@ class Handler(BaseHTTPRequestHandler):
                     "accepted": row[5],
                     "verdict": json.loads(row[6]) if row[6] else None,
                     "createdAt": row[7],
+                    "submissionTxHash": row[8] if len(row) > 8 else "",
                 }
                 for row in rows
             ]
@@ -392,7 +418,12 @@ class Handler(BaseHTTPRequestHandler):
             }
             with sqlite3.connect(DB_PATH) as db:
                 db.execute(
-                    "INSERT INTO submissions VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                    """
+                    INSERT INTO submissions (
+                        id, job_id, deliverable, deliverable_url, evidence_urls,
+                        accepted, verdict, created_at, submission_tx_hash
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
                     (
                         submission_id,
                         payload["jobId"],
@@ -402,6 +433,7 @@ class Handler(BaseHTTPRequestHandler):
                         None,
                         json.dumps(verdict),
                         now,
+                        str(payload.get("submissionTxHash", "")),
                     ),
                 )
                 db.execute("UPDATE jobs SET status = ? WHERE id = ?", ("evaluating", payload["jobId"]))

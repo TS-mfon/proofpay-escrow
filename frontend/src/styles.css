@@ -175,6 +175,24 @@ input:focus, textarea:focus, select:focus { border-color: #ff7a3d; box-shadow: 0
   border: 1px solid rgba(16,32,24,.12);
   box-shadow: 0 16px 50px rgba(16,32,24,.12);
 }
+.activity { margin-top: 34px; display: grid; gap: 16px; }
+.process-card {
+  padding: 22px;
+  border-radius: 28px;
+  background: #fff;
+  border: 1px solid rgba(16,32,24,.12);
+  box-shadow: 0 16px 50px rgba(16,32,24,.1);
+}
+.process-card dl { grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); }
+.process-card a { color: #e35f2d; font-weight: 950; text-decoration: none; }
+.reasons {
+  display: inline-flex;
+  padding: 10px 12px;
+  border-radius: 18px;
+  background: #ffcf5a;
+  color: #102018;
+  font-weight: 900;
+}
 .pill {
   display: inline-flex;
   margin: 0 8px 12px 0;

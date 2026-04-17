@@ -74,6 +74,8 @@ type Job = {
   onchainJobId?: string;
   fundingTxHash?: string;
 };
+type Verdict = { accepted: boolean | null; summary?: string; reasonCodes?: string[]; verdictDigest?: string; genlayerTxHash?: string; recordTxHash?: string; settlementTxHash?: string; settlementStatus?: string };
+type Submission = { id: string; jobId: string; deliverable: string; deliverableUrl: string; evidenceUrls: string[]; accepted: number | null; verdict: Verdict | null; createdAt: number; submissionTxHash?: string };
 
 const nowPlusDay = () => new Date(Date.now() + 86400 * 1000).toISOString().slice(0, 16);
 const hash32 = (value: string) => keccak256(toHex(value));
@@ -86,6 +88,7 @@ function App() {
   const [wallets, setWallets] = useState<Record<Role, string>>({ creator: "", jobber: "" });
   const [health, setHealth] = useState<Health | null>(null);
   const [jobs, setJobs] = useState<Job[]>([]);
+  const [submissions, setSubmissions] = useState<Submission[]>([]);
   const [message, setMessage] = useState("Connect a role wallet to start.");
   const [busy, setBusy] = useState(false);
   const [jobForm, setJobForm] = useState({
@@ -105,10 +108,11 @@ function App() {
 
   async function refresh() {
     try {
-      const [healthRes, jobsRes] = await Promise.all([fetch(`${API_URL}/health`), fetch(`${API_URL}/jobs`)]);
-      if (!healthRes.ok || !jobsRes.ok) throw new Error("Relay returned an unavailable response.");
+      const [healthRes, jobsRes, submissionsRes] = await Promise.all([fetch(`${API_URL}/health`), fetch(`${API_URL}/jobs`), fetch(`${API_URL}/submissions`)]);
+      if (!healthRes.ok || !jobsRes.ok || !submissionsRes.ok) throw new Error("Relay returned an unavailable response.");
       setHealth(await healthRes.json());
       setJobs((await jobsRes.json()).jobs || []);
+      setSubmissions((await submissionsRes.json()).submissions || []);
       setMessage("Relay online. Arc escrow and GenLayer judge are configured.");
     } catch (error) {
       setHealth({ arcEscrowContract: ARC_ESCROW_CONTRACT, genlayerJudgeContract: GENLAYER_JUDGE_CONTRACT, arcChainId: ARC_CHAIN_ID, genlayerNetwork: GENLAYER_NETWORK });
@@ -203,27 +207,30 @@ function App() {
     setBusy(true);
     try {
       await ensureArcNetwork();
+      let submissionTxHash = "";
       if (onchainJobId) {
         const publicClient = createPublicClient({ chain: arcTestnet, transport: http(ARC_RPC_URL) });
         const walletClient = createWalletClient({ chain: arcTestnet, transport: custom(window.ethereum!) });
         setMessage("Submitting the work hash to the Arc escrow contract...");
-        const txHash = await walletClient.writeContract({
+        submissionTxHash = await walletClient.writeContract({
           account: wallets.jobber as `0x${string}`,
           address: ARC_ESCROW_CONTRACT,
           abi: escrowAbi,
           functionName: "submitWork",
           args: [BigInt(onchainJobId), hash32(JSON.stringify(submissionForm))],
         });
-        await publicClient.waitForTransactionReceipt({ hash: txHash });
+        await publicClient.waitForTransactionReceipt({ hash: submissionTxHash as `0x${string}` });
       }
       const res = await fetch(`${API_URL}/submissions`, {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ ...submissionForm, onchainJobId, evidenceUrls: splitUrls(submissionForm.evidenceUrls) }),
+        body: JSON.stringify({ ...submissionForm, onchainJobId, submissionTxHash, evidenceUrls: splitUrls(submissionForm.evidenceUrls) }),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.urlProblems?.map((item: { url: string; reason: string }) => `${item.url}: ${item.reason}`).join(" | ") || data.error || "Could not submit work.");
       setMessage(`Submission ${data.submissionId}: ${data.verdict.summary}`);
+      setPage("status");
+      await refresh();
     } catch (error) {
       setMessage(error instanceof Error ? error.message : "Submit work failed.");
     } finally {
@@ -243,9 +250,9 @@ function App() {
       {page === "home" && <Landing setPage={setPage} connectWallet={connectWallet} wallets={wallets} />}
       {page === "creator" && <CreatorPortal form={jobForm} setForm={setJobForm} wallet={wallets.creator} connect={() => connectWallet("creator")} submit={createAndFundJob} busy={busy} />}
       {page === "jobber" && <JobberPortal jobs={jobs} form={submissionForm} setForm={setSubmissionForm} wallet={wallets.jobber} connect={() => connectWallet("jobber")} submit={submitWork} busy={busy} />}
-      {page === "jobs" && <FindJobs jobs={jobs} setPage={setPage} setSubmissionForm={setSubmissionForm} />}
+      {page === "jobs" && <FindJobs jobs={jobs} submissions={submissions} setPage={setPage} setSubmissionForm={setSubmissionForm} />}
       {page === "tutorial" && <Tutorial />}
-      {page === "status" && <Status health={health} message={message} refresh={refresh} />}
+      {page === "status" && <Status health={health} message={message} refresh={refresh} jobs={jobs} submissions={submissions} />}
 
       <aside className="toast">{message}</aside>
     </main>
@@ -304,28 +311,46 @@ function JobberPortal({ jobs, form, setForm, wallet, connect, submit, busy }: { 
 
 const initialSubmissionForm = { jobId: "", onchainJobId: "", deliverable: "", deliverableUrl: "", evidenceUrls: "" };
 
-function FindJobs({ jobs, setPage, setSubmissionForm }: { jobs: Job[]; setPage: (page: Page) => void; setSubmissionForm: React.Dispatch<React.SetStateAction<typeof initialSubmissionForm>> }) {
+function FindJobs({ jobs, submissions, setPage, setSubmissionForm }: { jobs: Job[]; submissions: Submission[]; setPage: (page: Page) => void; setSubmissionForm: React.Dispatch<React.SetStateAction<typeof initialSubmissionForm>> }) {
   return <section className="panel page-rise">
     <div className="section-head"><p className="eyebrow">Job board</p><h2>Find funded work</h2><p>Browse jobs created through the relay and backed by the Arc escrow transaction recorded at creation time.</p></div>
-    <div className="cards">{jobs.length === 0 ? <p className="empty">No jobs listed yet.</p> : jobs.map((job) => <article className="job-card" key={job.id}>
-      <div><span className="pill">{job.status}</span><span className="pill">On-chain #{job.onchainJobId || "pending"}</span></div>
+    <div className="cards">{jobs.length === 0 ? <p className="empty">No jobs listed yet.</p> : jobs.map((job) => { const jobSubmissions = submissions.filter((submission) => submission.jobId === job.id); const latest = jobSubmissions[0]; return <article className="job-card" key={job.id}>
+      <div><span className="pill">{job.status}</span><span className="pill">On-chain #{job.onchainJobId || "pending"}</span><span className="pill">{jobSubmissions.length} submission{jobSubmissions.length === 1 ? "" : "s"}</span></div>
       <h3>{job.title}</h3><p>{job.requirements}</p>
-      <dl><div><dt>Reward</dt><dd>{job.amount}</dd></div><div><dt>Provider</dt><dd>{short(job.provider)}</dd></div></dl>
+      <dl><div><dt>Reward</dt><dd>{job.amount}</dd></div><div><dt>Provider</dt><dd>{short(job.provider)}</dd></div><div><dt>Funding tx</dt><dd>{hashLink(job.fundingTxHash)}</dd></div><div><dt>Latest verdict</dt><dd>{latest?.verdict ? verdictLabel(latest.verdict) : "No work yet"}</dd></div></dl>
       <button className="primary" onClick={() => { setSubmissionForm((form) => ({ ...form, jobId: job.id, onchainJobId: job.onchainJobId || "" })); setPage("jobber"); }}>Submit work</button>
-    </article>)}</div>
+    </article>; })}</div>
   </section>;
 }
 
 function Tutorial() {
   return <section className="panel tutorial page-rise"><p className="eyebrow">Tutorial</p><h2>How ProofPay works</h2>
-    <ol><li>Creator connects their creator wallet and enters the provider wallet, reward, deadline, and acceptance rubric.</li><li>The app creates the Arc escrow job and funds it from the creator wallet in two wallet transactions.</li><li>Jobber connects their own wallet, selects a job, and submits the work hash to Arc plus a review package to the relay.</li><li>Optional evidence links are checked before being accepted. If GenLayer cannot access a link, the relay tells the user before submission.</li><li>The current deployment supports funded escrow plus verdict preview. On-chain release/refund requires the relay signer to record the GenLayer verdict.</li></ol>
+    <ol><li>Creator connects their creator wallet and enters the provider wallet, reward, deadline, and acceptance rubric.</li><li>The app creates the Arc escrow job and funds it from the creator wallet in two wallet transactions.</li><li>Jobber connects their own wallet, selects a job, and submits the work hash to Arc plus a review package to the relay.</li><li>Optional evidence links are checked before being accepted. If GenLayer cannot access a link, the relay tells the user before submission.</li><li>The relay calls the GenLayer judge, records the verdict on Arc, then releases payout or refunds the buyer automatically.</li></ol>
   </section>;
 }
 
-function Status({ health, message, refresh }: { health: Health | null; message: string; refresh: () => void }) {
+function Status({ health, message, refresh, jobs, submissions }: { health: Health | null; message: string; refresh: () => void; jobs: Job[]; submissions: Submission[] }) {
   return <section className="panel status page-rise"><p className="eyebrow">Network status</p><h2>Live configuration</h2>
-    <p>Arc escrow: <code>{health?.arcEscrowContract || ARC_ESCROW_CONTRACT}</code></p><p>GenLayer judge: <code>{health?.genlayerJudgeContract || GENLAYER_JUDGE_CONTRACT}</code></p><p>Network: <code>{health?.genlayerNetwork || GENLAYER_NETWORK}</code></p><p>Relay API: <code>{API_URL}</code></p><p>{message}</p><button className="secondary" onClick={refresh}>Refresh status</button>
+    <p>Arc escrow: <code>{health?.arcEscrowContract || ARC_ESCROW_CONTRACT}</code></p><p>GenLayer judge: <code>{health?.genlayerJudgeContract || GENLAYER_JUDGE_CONTRACT}</code></p><p>Network: <code>{health?.genlayerNetwork || GENLAYER_NETWORK}</code></p><p>Relay API: <code>{API_URL}</code></p><p>{message}</p><button className="secondary" onClick={refresh}>Refresh status</button><div className="activity"><h3>Work process</h3>{submissions.length === 0 ? <p className="empty">No submissions yet.</p> : submissions.map((submission) => <ProcessCard key={submission.id} submission={submission} job={jobs.find((job) => job.id === submission.jobId)} />)}</div>
   </section>;
+}
+
+function ProcessCard({ submission, job }: { submission: Submission; job?: Job }) {
+  const verdict = submission.verdict;
+  return <article className="process-card"><div><span className="pill">{verdictLabel(verdict)}</span><span className="pill">{submission.id}</span></div><h3>{job?.title || submission.jobId}</h3><p>{submission.deliverable}</p><dl><div><dt>Provider</dt><dd>{short(job?.provider || "")}</dd></div><div><dt>On-chain job</dt><dd>#{job?.onchainJobId || "unknown"}</dd></div><div><dt>Funding tx</dt><dd>{hashLink(job?.fundingTxHash)}</dd></div><div><dt>Submit tx</dt><dd>{hashLink(submission.submissionTxHash)}</dd></div><div><dt>GenLayer tx</dt><dd>{hashLink(verdict?.genlayerTxHash)}</dd></div><div><dt>Record verdict tx</dt><dd>{hashLink(verdict?.recordTxHash)}</dd></div><div><dt>Settlement tx</dt><dd>{hashLink(verdict?.settlementTxHash)}</dd></div><div><dt>Digest</dt><dd>{short(verdict?.verdictDigest || "")}</dd></div></dl><p>{verdict?.summary || "Waiting for relay update."}</p>{verdict?.reasonCodes?.length ? <p className="reasons">{verdict.reasonCodes.join(", ")}</p> : null}</article>;
+}
+
+function verdictLabel(verdict?: Verdict | null) {
+  if (!verdict) return "not submitted";
+  if (verdict.accepted === null) return "evaluating";
+  if (verdict.reasonCodes?.includes("SETTLEMENT_FAILED")) return "settlement failed";
+  return verdict.accepted ? "accepted" : "refunded";
+}
+
+function hashLink(value?: string) {
+  if (!value) return "pending";
+  const href = `https://explorer.testnet.arc.network/tx/${value}`;
+  return <a href={href} target="_blank" rel="noreferrer">{short(value)}</a>;
 }
 
 createRoot(document.getElementById("root")!).render(<App />);
