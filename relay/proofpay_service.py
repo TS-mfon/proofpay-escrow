@@ -169,10 +169,43 @@ def maybe_extract_verdict(raw):
     try:
         data = extract_json_object(raw)
     except Exception:
-        return None
+        data = None
     if isinstance(data, dict) and {"accepted", "verdictDigest"}.issubset(data.keys()):
         return data
+    return extract_readable_verdict(raw)
+
+
+def extract_readable_verdict(raw):
+    readable_matches = re.findall(r"readable:\s*'([^']+)'", raw, flags=re.S)
+    for readable in reversed(readable_matches):
+        if '"accepted":' not in readable or '"verdictDigest":' not in readable:
+            continue
+        accepted_match = re.search(r'"accepted":(true|false)', readable)
+        verdict_digest_match = re.search(r'"verdictDigest":"([^"]+)"', readable)
+        if not accepted_match or not verdict_digest_match:
+            continue
+        reason_codes_match = re.search(r'"reasonCodes":\[(.*?)\]', readable)
+        reason_codes = re.findall(r'"([^"]+)"', reason_codes_match.group(1)) if reason_codes_match else []
+        verdict = {
+            "accepted": accepted_match.group(1) == "true",
+            "summary": extract_readable_field(readable, "summary") or "GenLayer returned a verdict.",
+            "reasonCodes": reason_codes,
+            "evidenceDigest": extract_readable_field(readable, "evidenceDigest") or "",
+            "verdictDigest": verdict_digest_match.group(1),
+        }
+        submission_id = extract_readable_field(readable, "submissionId")
+        job_id = extract_readable_field(readable, "jobId")
+        if submission_id:
+            verdict["submissionId"] = submission_id
+        if job_id:
+            verdict["jobId"] = job_id
+        return verdict
     return None
+
+
+def extract_readable_field(readable, field):
+    match = re.search(rf'"{re.escape(field)}":"([^"]*)"', readable)
+    return match.group(1) if match else None
 
 
 def evaluate_with_genlayer(job_id, submission_id, requirements, deliverable, deliverable_url, evidence_urls):
